@@ -48,3 +48,38 @@ Both must-fix items addressed on top of `1b6b831` (round-1 review base). Commits
    Full-repo scan re-run after the edit: `grep -rnP '[\x{4e00}-\x{9fff}]' --exclude-dir=.git --exclude-dir=.venv .` now returns zero hits in `docs/tickets/PRD-21261.md` (and zero anywhere else in the repo outside this review document). The only remaining hits are inside `docs/tickets/PRD-21261-review.md` itself (this file, lines 9/20/30 above) — direct quotations of the Chinese-language SOP/mcp-track.md clauses cited as evidence in round 1, authored by the reviewer, not by this fix round. Finding 2 named `docs/tickets/PRD-21261.md` specifically, not this review document, and this round's scope is limited to that must-fix; the review record's own citation style is not this leg's call to change.
 
 Dev-lock released; `dev/PRD-21261` re-pushed with these fixes on top of `eb8c096`. Next: code review round 2.
+
+## Round 2 · 2026-11-03 · reviewed dev/PRD-21261 @ 2b1da77 (base main @ 2eec5ea)
+
+Status: frozen @ 2b1da77
+
+Verdict: approved
+
+### Round 1 must-fix verification
+
+1. `src/grafana_mcp/credentials.py` — confirmed fixed and matches the finding's ask. `CredentialMiddleware` now buffers the request body, computes `missing` headers (`X-Grafana-Base-Url` always required; `X-Grafana-Token` required unless the body is a `tools/call` for `grafana_get_health`), and returns a 401 `JSONResponse` with `required_headers` before the request reaches `self.app`, mirroring itglue-mcp's `_reject()` shape as asked. Verified independently, not just by re-reading the diff:
+   - `uv run pytest -q` on `2b1da77`: 38 passed (reproduced, matches the `[DEV]` stub's claim).
+   - `uv run ruff check .`: all checks passed (reproduced).
+   - Live local server (`uv run grafana-mcp`) and a fresh `sudo docker build . && sudo docker run` (non-root `whoami`=`app` confirmed, `/health`→200 confirmed): `tools/list` with no headers → `401 {"required_headers":["X-Grafana-Base-Url","X-Grafana-Token"]}`; with placeholder non-empty headers → `200`/12 tools (admin-console refresh case preserved); `tools/call grafana_get_health` with base URL present but token absent → `200` (reaches the tool, fails on an unrelated `ConnectError` against the placeholder host — confirms the exemption only covers the token, not the base URL, as `test_health_check_tool_still_needs_base_url` also asserts); base URL absent / token present → `401` with `required_headers: ["X-Grafana-Base-Url"]`.
+   - `tests/test_middleware.py` diff: the five new/replaced tests (`test_missing_both_headers_on_tools_list_is_401`, `test_missing_token_header_on_initialize_is_401`, `test_missing_base_url_header_on_tools_list_is_401`, `test_empty_token_header_is_still_401`, `test_missing_token_header_on_tool_call_is_401_without_outbound_call`) and two new ones (`test_placeholder_headers_do_not_block_initialize_or_tools_list`, `test_health_check_tool_still_needs_base_url`) cover exactly the behavior above; `route.call_count == 0` is still asserted on the missing-token tool-call case, so "zero outbound calls on a rejected request" (the one part of the old TC7 assertion that still holds) is preserved.
+   - SOP §14 checklist item "缺 Header 时 `/mcp` 返回 401 并列出所需 Header" is now satisfied; it was the one item finding 1 called out as failing.
+
+2. `docs/tickets/PRD-21261.md` Chinese markup — confirmed fixed. Independently re-ran the full-repo scan the finding said the Self-test's command had wrongly excluded:
+   ```
+   $ grep -rnP '[\x{4e00}-\x{9fff}]' --exclude-dir=.git --exclude-dir=.venv .
+   ```
+   Zero hits outside `docs/tickets/PRD-21261-review.md` itself (this file) — the only remaining hits are the reviewer's own round-1 citations of the Chinese SOP/mcp-track.md clauses used as evidence, not undone by the fix. The finding named `docs/tickets/PRD-21261.md` specifically; that file is now clean (`主线 A`, `先复用，再自研`, and all four bracket tags translated, plus one additional untranslated instance — `"运行模型"` → `"Operating model"` — the fix round caught on its own that the finding's line list hadn't named).
+
+### New diff review (`1b6b831...2b1da77`)
+
+No new must-fix. One suggestion:
+
+1. [suggestion] `src/grafana_mcp/credentials.py:36` — `_NO_TOKEN_TOOLS = frozenset({"grafana_get_health"})` duplicates the token-exemption decision that already lives at the call site, `tools/health.py:29` (`run(settings, handler, require_token=False)`). Today the two agree (grep confirms `require_token=False` has exactly one call site, matching the one entry in `_NO_TOKEN_TOOLS`), so this is not a live bug. But it's two sources of truth for the same fact: a future tool added with `require_token=False` and not also added to `_NO_TOKEN_TOOLS` would be wrongly 401-rejected at the middleware before reaching the tool's own (already-correct) exemption. Not blocking — the failure direction is fail-closed, not a credential leak — but worth collapsing into one source (e.g. a small per-tool registry both `_common.run` and the middleware read) next time this file is touched.
+
+### Other checks
+
+- README `## MSPbots Connector` boilerplate (lines 11-81) diffed byte-for-byte against `~/.claude/skills/vendor-mcp-development/reference/readme-connector-section.md`: identical, confirming the Fixes round 1 claim that it was not touched. Section order (Connector boilerplate before the Authentication headers table) still matches SOP §0.5.
+- `README.md`'s "Authentication headers" paragraph (the non-boilerplate part) was updated to describe the new 401 behavior and checked against the live responses above — accurate.
+- Change list in `docs/tickets/PRD-21261.md` still describes `credentials.py` as raising an in-band `not_configured`/`invalid_argument` envelope on a missing header (stale relative to this fix) — this is inside the frozen Product/Tech design section, out of this leg's authority to edit, and round 1's Fixes note already flagged TC7/AC7-TC7 staleness for the design leg to pick up on next touch; not a new finding.
+
+No outstanding must-fix. Proceeding to merge into the default branch, INT publish and connector wiki.
