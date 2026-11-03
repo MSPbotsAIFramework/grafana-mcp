@@ -43,41 +43,72 @@ def test_health_needs_no_credentials(client):
     assert r.status_code == 200 and r.json() == {"status": "ok"}
 
 
-def test_tools_list_works_without_any_headers(client):
-    # The admin console refreshes a connector's tool catalog this way, before a tenant has
-    # entered credentials -- initialize / tools/list must not be blocked (see PRD-21261 TC7:
-    # a missing credential is reported by the *tool call*, not by rejecting the request).
-    assert client.post("/mcp", json=INIT, headers=HEADERS).status_code == 200
+# Code review round 1, finding 1: a request to /mcp missing a required header is rejected
+# with HTTP 401 before it ever reaches a tool (SOP sec 3.2), mirroring itglue-mcp's
+# CredentialMiddleware shape. This replaces the earlier TC7 interpretation (an in-band
+# `not_configured` tool-call error for an absent header) -- see Fixes round 1 in
+# docs/tickets/PRD-21261-review.md for why, and docs/tickets/PRD-21261.md TC7 for the
+# original (now superseded) test-case wording.
+def test_missing_both_headers_on_tools_list_is_401(client):
     r = client.post("/mcp", json=LIST, headers=HEADERS)
+    assert r.status_code == 401
+    body = r.json()
+    assert set(body["required_headers"]) == {TOKEN_HEADER, BASE_URL_HEADER}
+
+
+def test_missing_token_header_on_initialize_is_401(client):
+    r = client.post("/mcp", json=INIT, headers={**HEADERS, BASE_URL_HEADER: BASE})
+    assert r.status_code == 401
+    assert r.json()["required_headers"] == [TOKEN_HEADER]
+
+
+def test_missing_base_url_header_on_tools_list_is_401(client):
+    r = client.post("/mcp", json=LIST, headers={**HEADERS, "X-Grafana-Token": "tok"})
+    assert r.status_code == 401
+    assert r.json()["required_headers"] == [BASE_URL_HEADER]
+
+
+@pytest.mark.parametrize("token", ["", "   "])
+def test_empty_token_header_is_still_401(client, token):
+    h = {**HEADERS, "X-Grafana-Token": token, "X-Grafana-Base-Url": BASE}
+    assert client.post("/mcp", json=LIST, headers=h).status_code == 401
+
+
+@respx.mock
+def test_missing_token_header_on_tool_call_is_401_without_outbound_call(client):
+    route = respx.get(f"{BASE}/api/search").mock(return_value=httpx.Response(200, json=[]))
+    body = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "grafana_search_dashboards", "arguments": {}},
+    }
+    r = client.post("/mcp", json=body, headers={**HEADERS, "X-Grafana-Base-Url": BASE})
+    assert r.status_code == 401
+    assert TOKEN_HEADER in r.json()["required_headers"]
+    assert route.call_count == 0
+
+
+# Admin-console tool-catalog refresh: the console always sends *some* value for a required
+# header, even before a tenant has entered real credentials (it never omits the header
+# entirely) -- verified against the real precedent this connector's design doc originally
+# (and incorrectly) cited, itglue-mcp's test_malformed_region_or_base_url_does_not_... .
+# A present-but-not-a-real-token value, and a present-but-malformed base URL, must not be
+# rejected at this layer; only an absent header is.
+def test_placeholder_headers_do_not_block_initialize_or_tools_list(client):
+    h = {**HEADERS, "X-Grafana-Token": "placeholder", "X-Grafana-Base-Url": "placeholder"}
+    assert client.post("/mcp", json=INIT, headers=h).status_code == 200
+    r = client.post("/mcp", json=LIST, headers=h)
     assert r.status_code == 200
     assert len(r.json()["result"]["tools"]) == 12
 
 
 def test_tools_list_is_stateless(client):
-    # No initialize / session id: must still answer 200.
-    r = client.post("/mcp", json=LIST, headers=HEADERS)
+    # No initialize / session id: must still answer 200 (both required headers present).
+    h = {**HEADERS, "X-Grafana-Token": "tok", "X-Grafana-Base-Url": BASE}
+    r = client.post("/mcp", json=LIST, headers=h)
     assert r.status_code == 200
     assert len(r.json()["result"]["tools"]) == 12
-
-
-# TC7: missing X-Grafana-Token -> not_configured, zero outbound calls (not a 500, not a hang,
-# and not an HTTP-level 401 -- tools/list above must keep working regardless).
-@respx.mock
-def test_missing_token_header_returns_not_configured_without_outbound_call(client):
-    route = respx.get(f"{BASE}/api/search").mock(return_value=httpx.Response(200, json=[]))
-    out = _call_tool(client, "grafana_search_dashboards", {"X-Grafana-Base-Url": BASE})
-    assert out["error"]["code"] == "not_configured"
-    assert TOKEN_HEADER in out["error"]["message"]
-    assert route.call_count == 0
-
-
-@respx.mock
-def test_missing_base_url_header_returns_not_configured_without_outbound_call(client):
-    route = respx.get(f"{BASE}/api/search").mock(return_value=httpx.Response(200, json=[]))
-    out = _call_tool(client, "grafana_search_dashboards", {"X-Grafana-Token": "tok"})
-    assert out["error"]["code"] == "not_configured"
-    assert BASE_URL_HEADER in out["error"]["message"]
-    assert route.call_count == 0
 
 
 def test_malformed_base_url_does_not_block_initialize_or_tools_list(client):
@@ -103,6 +134,20 @@ def test_health_check_tool_works_without_token(client):
     )
     out = _call_tool(client, "grafana_get_health", {"X-Grafana-Base-Url": BASE})
     assert out == {"version": "10.4.0", "database": "ok"}
+
+
+def test_health_check_tool_still_needs_base_url(client):
+    # The token exemption (above) is narrow: grafana_get_health still needs to know which
+    # instance to probe, so a request missing X-Grafana-Base-Url is 401 regardless.
+    body = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "grafana_get_health", "arguments": {}},
+    }
+    r = client.post("/mcp", json=body, headers=HEADERS)
+    assert r.status_code == 401
+    assert r.json()["required_headers"] == [BASE_URL_HEADER]
 
 
 # TC10: two concurrent requests, each with its own credentials, must never see the other's

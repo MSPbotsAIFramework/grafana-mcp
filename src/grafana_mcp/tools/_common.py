@@ -85,9 +85,12 @@ async def run(
     """Execute ``handler`` with a client bound to this request's credentials.
 
     Always returns a string: the JSON result, or an error envelope -- tools never raise.
-    A missing required header is reported as ``not_configured`` with zero outbound calls
-    (PRD-21261 TC7); a malformed base URL that was actually sent is ``invalid_argument``.
-    ``secrets`` (plus the request's own token) are masked out of any error message.
+    A request missing a header this tool actually requires is already rejected with
+    HTTP 401 by ``CredentialMiddleware`` before it gets here (code review round 1,
+    finding 1), so the ``not_configured`` branch below is a defense-in-depth fallback,
+    not the primary gate. A malformed base URL that was actually sent (header present,
+    value rejected by Grafana) is ``invalid_argument``. ``secrets`` (plus the request's
+    own token) are masked out of any error message.
     """
     secrets = [s for s in secrets if s]
     creds = current()

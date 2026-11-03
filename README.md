@@ -87,11 +87,14 @@ Links: [connect.mspbots.ai](https://connect.mspbots.ai) · [mspbots.ai](https://
 | `X-Grafana-Base-Url` | Yes | Base URL of the target Grafana instance, e.g. `https://acme.grafana.net`. `https://` or `http://` (self-hosted instances on a private network are common). |
 | `X-Grafana-Token` | Yes | Grafana Service Account token, sent upstream as `Authorization: Bearer <token>`. Create it in Grafana under **Administration → Service accounts**. Role **Viewer** covers every read tool; **Editor** (or higher) is required for `grafana_create_annotation`. |
 
-Header names are case-insensitive. `initialize` and `tools/list` work even without these headers
-(the platform's admin console refreshes a connector's tool catalog this way); a tool call made
-without them returns a structured `not_configured` error instead of a generic failure, and makes
-no outbound call to Grafana. A `X-Grafana-Base-Url` that isn't a valid absolute `http(s)` URL
-produces `invalid_argument` on the next tool call (`initialize` / `tools/list` still work).
+Header names are case-insensitive. A `/mcp` request missing a required header is rejected with
+HTTP `401` and a `required_headers` list in the body, before it reaches any tool — the platform's
+admin console can still refresh a connector's tool catalog this way, as long as it sends *some*
+(even placeholder) value for each required header; only a genuinely absent header is rejected.
+The one exception is `grafana_get_health`, which needs no token at all (still needs the base URL).
+A `X-Grafana-Base-Url` that is present but not a valid absolute `http(s)` URL is not rejected at
+the header level: `initialize` / `tools/list` keep working, and the next tool call returns a
+structured `invalid_argument` error instead.
 
 ## Tools
 
