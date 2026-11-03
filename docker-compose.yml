@@ -1,0 +1,6 @@
+services:
+  grafana-mcp:
+    build: .
+    image: grafana-mcp:local
+    ports:
+      - "8080:8080"

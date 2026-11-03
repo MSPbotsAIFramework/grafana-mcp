@@ -1,0 +1,136 @@
+[
+  {
+    "id": "TC1",
+    "ac": "AC1",
+    "text": "Given a fresh Grafana Service Account token (Viewer role) and the instance base URL, When the connector is configured with those two header values and grafana_search_dashboards() is called with no filters, Then the call succeeds and returns the instance's known dashboards, not an auth error.",
+    "type": "manual",
+    "steps": [
+      "Create a Grafana Service Account token with Viewer role on a real Grafana instance (Cloud or self-hosted)",
+      "Configure the grafana-mcp connector in MSPbots Agent Platform with X-Grafana-Base-Url and X-Grafana-Token set to that instance/token",
+      "Ask an agent to list dashboards (grafana_search_dashboards with no filters)"
+    ],
+    "expect": "The tool returns the instance's dashboards (title/uid/folder), not an unauthorized or upstream error",
+    "result": "untested",
+    "evidence": "Needs a real Grafana instance + Service Account token, not available in this dev environment. Not a blocker for 6b per the vendor-mcp completion standard (mcp-track.md: 'no test account is not a blocker'). Substitute coverage: TC2/TC3 (tests/test_tools.py) exercise grafana_search_dashboards/grafana_get_dashboard end-to-end against a mocked Grafana API, and the live smoke test against demo Grafana-shaped headers confirmed the request/response plumbing (see Self-test section)."
+  },
+  {
+    "id": "TC2",
+    "ac": "AC2",
+    "text": "Given a mocked GET /api/search response with 3 dashboards (2 tagged 'infra', 1 not), When grafana_search_dashboards(tag=\"infra\") is called, Then only the 2 tagged dashboards are returned.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_dashboards_filters_by_tag"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_tools.py::test_search_dashboards_filters_by_tag PASSED [2026-11-02/03]"
+  },
+  {
+    "id": "TC3",
+    "ac": "AC3",
+    "text": "Given a mocked dashboard JSON with 5 panels, When grafana_get_dashboard(uid) is called without include_raw, Then the response contains title/uid/tags/folder and exactly 5 panel summaries (id/title/type/datasource), with no raw panel query bodies.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_get_dashboard_default_is_compact_summary"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_tools.py::test_get_dashboard_default_is_compact_summary PASSED. Test asserts exactly 5 panel summaries (id/title/type/datasource) and asserts the literal string 'targets' is absent from the serialized panels output."
+  },
+  {
+    "id": "TC4",
+    "ac": "AC4",
+    "text": "Given a real backend datasource (e.g. Prometheus) configured on the test Grafana instance, When grafana_query_datasource(datasource_uid, query, from=\"now-5m\", to=\"now\") is called, Then the response contains results.A.frames with at least one data point.",
+    "type": "manual",
+    "steps": [
+      "On the test Grafana instance, confirm a backend-enabled datasource (e.g. Prometheus) exists and note its uid",
+      "Ask an agent to query that datasource over the last 5 minutes via grafana_query_datasource"
+    ],
+    "expect": "Response contains results.A.frames with at least one data point, not an error envelope",
+    "result": "untested",
+    "evidence": "Needs a real Grafana instance with a configured backend datasource. Not a blocker for 6b (no test account). Substitute coverage: tests/test_tools.py::test_query_datasource_builds_single_query_with_fixed_refid verifies the exact request body built (queries[0].refId/datasource fixed regardless of caller input, from/to passed through) and that results.A.frames round-trips from a mocked /api/ds/query response."
+  },
+  {
+    "id": "TC5",
+    "ac": "AC5",
+    "text": "Given a mocked GET /api/v1/provisioning/alert-rules response with rules split across 2 folders, When grafana_list_alert_rules(folder_uid=<folder A>) is called, Then only folder A's rules are returned.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_list_alert_rules_filters_by_folder_client_side"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_tools.py::test_list_alert_rules_filters_by_folder_client_side PASSED. Test also asserts no folderUID query param is sent upstream, confirming the filter is applied client-side as designed."
+  },
+  {
+    "id": "TC6",
+    "ac": "AC6",
+    "text": "Given an Editor-role Service Account token, When grafana_create_annotation(text=\"agent test\", dashboard_uid=...) is called, Then Grafana's GET /api/annotations subsequently shows the created annotation with the same text.",
+    "type": "manual",
+    "steps": [
+      "Create a Grafana Service Account token with Editor role",
+      "Ask an agent to create an annotation on a known dashboard via grafana_create_annotation",
+      "Query GET /api/annotations (or the Grafana UI) for that dashboard"
+    ],
+    "expect": "The created annotation appears with the given text, tags, and timestamp",
+    "result": "untested",
+    "evidence": "Needs a real Grafana instance + Editor-role Service Account token. Not a blocker for 6b. Substitute coverage: tests/test_tools.py::test_create_annotation_posts_only_set_fields verifies the POST /api/annotations body carries exactly the fields the caller set (text/tags) with unset fields omitted, and that the returned id round-trips."
+  },
+  {
+    "id": "TC7",
+    "ac": "AC7",
+    "text": "Given the X-Grafana-Token header is absent, When any tool is called, Then the response is {\"error\": {\"code\": \"not_configured\", ...}} and no outbound HTTP request is attempted.",
+    "type": "auto",
+    "tests": ["tests/test_middleware.py::test_missing_token_header_returns_not_configured_without_outbound_call"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_middleware.py::test_missing_token_header_returns_not_configured_without_outbound_call PASSED (asserts route.call_count == 0). Also reproduced live: curl to /mcp tools/call grafana_search_dashboards with no headers at all returned {\"error\":{\"code\":\"not_configured\",\"message\":\"No Grafana credentials. Send both X-Grafana-Token and X-Grafana-Base-Url.\",\"retryable\":false}} (see Self-test section)."
+  },
+  {
+    "id": "TC8",
+    "ac": "AC8",
+    "text": "Given a Viewer-role Service Account token, When grafana_create_annotation(...) is called, Then the response is {\"error\": {\"code\": \"unauthorized\", ...}} and GET /api/annotations afterward shows no new annotation.",
+    "type": "manual",
+    "steps": [
+      "Create (or reuse) a Grafana Service Account token with Viewer-only role",
+      "Ask an agent to create an annotation via grafana_create_annotation",
+      "Check GET /api/annotations (or the Grafana UI) for the target dashboard"
+    ],
+    "expect": "Tool returns a structured unauthorized error; no annotation was created",
+    "result": "untested",
+    "evidence": "Needs a real Grafana instance + Viewer-only Service Account token. Not a blocker for 6b. Substitute coverage: tests/test_tools.py::test_status_code_maps_to_envelope[403-unauthorized-False] proves a 403 from Grafana (the response a Viewer-role token calling a write endpoint gets) maps to the unauthorized envelope with no annotation created (the mocked call never returns a created id)."
+  },
+  {
+    "id": "TC9",
+    "ac": "AC9",
+    "text": "Given a mocked connection error (httpx.ConnectError) on any upstream call, When a tool is called, Then the response is {\"error\": {\"code\": \"upstream_error\", \"retryable\": true, ...}} within the test's assertion window, not a hang.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_connection_error_maps_to_upstream_error"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_tools.py::test_connection_error_maps_to_upstream_error PASSED in the normal test run (no hang, no increased timeout needed). Related: test_timeout_maps_to_upstream_error_after_bounded_retries also PASSED, covering the read-timeout path with bounded retries."
+  },
+  {
+    "id": "TC10",
+    "ac": "AC10",
+    "text": "Given two requests handled within the same running process, each with its own X-Grafana-Base-Url/X-Grafana-Token pair, When both are processed concurrently (simulated via two awaited tasks calling the same tool), Then each request's outbound HTTP call used only its own header pair, never the other request's values.",
+    "type": "auto",
+    "tests": [
+      "tests/test_middleware.py::test_concurrent_requests_do_not_leak_credentials_across_contextvar",
+      "tests/test_middleware.py::test_concurrent_tool_calls_use_only_their_own_header_pair"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> both tests PASSED. The first asserts the ContextVar itself never crosses between two interleaved asyncio tasks; the second drives two concurrent real tool calls through mocked HTTP and asserts each outbound Authorization header matched only its own tenant's token."
+  },
+  {
+    "id": "TC10b",
+    "ac": "AC10",
+    "text": "Given two distinct real Grafana instances connected as two different tenant connectors, When both tenants' agents call a read tool at the same time, Then tenant A never sees tenant B's dashboard/datasource data in its response.",
+    "type": "manual",
+    "steps": [
+      "Configure two separate grafana-mcp connectors for two different MSPbots tenants, each pointing at a different real Grafana instance with its own Service Account token",
+      "Trigger a dashboard search from both tenants' agents at roughly the same time"
+    ],
+    "expect": "Each tenant's response only contains dashboards from its own Grafana instance",
+    "result": "untested",
+    "evidence": "Needs two real Grafana instances/tenants to double-blind-check end to end. Not a blocker for 6b. The isolation mechanism itself (contextvars.ContextVar, no module-level client/cache) is fully covered by TC10's automated tests, which is the part that can regress; TC10b is an external confirmation of the same mechanism, not a different code path."
+  },
+  {
+    "id": "TC11",
+    "ac": "AC11",
+    "text": "Given a mocked dashboard JSON whose serialized size exceeds the tool's per-call budget, When grafana_get_dashboard(uid, include_raw=true) is called, Then the response is marked truncated: true rather than returning malformed/cut-off JSON.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_get_dashboard_raw_oversized_is_truncated_not_corrupted"],
+    "result": "pass",
+    "evidence": "uv run pytest -v -> tests/test_tools.py::test_get_dashboard_raw_oversized_is_truncated_not_corrupted PASSED. Asserts out['truncated'] is True, that the result parses as valid JSON (not a cut-off string), and that the serialized size stays within the 20,000-char budget."
+  }
+]
